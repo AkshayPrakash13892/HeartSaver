@@ -23,6 +23,8 @@ st.set_page_config(
 
 MODEL_PATH = Path(__file__).parent / "heartsaver_model.pkl"
 
+# The 9 features the deployed model was actually trained on (notebook 6.2).
+# Used to sanity-check a loaded .pkl against what this form collects.
 SUPPORTED_FEATURES = {
     "ST_Slope",
     "ChestPainType",
@@ -44,14 +46,15 @@ REQUIRED_TEST_RESULT_KEYS = {
     "false_positives",
 }
 
-# These ranges describe the records used by the notebook. Values outside them are
-# accepted when clinically possible, but the app warns that they are extrapolations.
+# Ranges seen in training. Inputs outside these are still accepted (they can
+# be clinically real) but get flagged as extrapolation.
 TRAINING_RANGES = {
     "Age": (28, 77),
     "MaxHR": (60, 202),
     "Oldpeak": (-2.6, 6.2),
 }
 
+# Category codes -> display labels for every dropdown.
 LABELS = {
     "Sex": {"F": "Female", "M": "Male"},
     "ChestPainType": {
@@ -72,8 +75,8 @@ LABELS = {
     },
 }
 
-# The first two profiles reproduce the notebook's worked examples. The third is a
-# dataset profile with a model score almost exactly at the 0.30 operating point.
+# Three canned patients for the "Load" button — first two match the
+# notebook's own worked examples, third sits near the 0.30 cutoff.
 PRESETS = {
     "Higher-score example": {
         "Age": 62,
@@ -109,7 +112,10 @@ PRESETS = {
 
 
 def validate_bundle(candidate: Any) -> str | None:
-    """Return a user-facing problem if a loaded model contract is invalid."""
+    """Check that whatever we just unpickled is actually a usable model
+    bundle, and say specifically what's wrong if it isn't. Better to fail
+    here with a readable message than a KeyError three functions later.
+    """
     if not isinstance(candidate, dict):
         return "The model file contains a bare estimator rather than the required bundle."
 
@@ -125,6 +131,8 @@ def validate_bundle(candidate: Any) -> str | None:
     if duplicate_features:
         return f"The stored feature list contains duplicates: {duplicate_features}."
 
+    # The pkl's feature list has to line up with what the form below
+    # actually collects, or we'd be asking the user for the wrong things.
     unknown = sorted(set(features) - SUPPORTED_FEATURES)
     absent = sorted(SUPPORTED_FEATURES - set(features))
     if unknown or absent:
@@ -169,23 +177,32 @@ def validate_bundle(candidate: Any) -> str | None:
 
 
 def patient_frame(values: dict[str, Any], features: list[str]) -> pd.DataFrame:
-    """Build one model-ready row and reproduce notebook feature engineering."""
+    """Turn one filled-out form into a single model-ready row.
+
+    HasSTDepression isn't a form field — the model expects it as a column
+    but we only ask for Oldpeak, so it's derived here the same way the
+    notebook derives it in 3.2.
+    """
     row = dict(values)
     row["HasSTDepression"] = int(float(row["Oldpeak"]) > 0)
-    return pd.DataFrame([row]).loc[:, features]
+    return pd.DataFrame([row]).loc[:, features]  # reorder/subset to match the fitted pipeline
 
 
 def disease_probability(bundle: dict[str, Any], values: dict[str, Any]) -> float:
-    """Return the fitted model's class-1 probability for one completed form."""
+    """Score one patient and return P(heart disease)."""
     model = bundle["model"]
     features = list(bundle["features"])
+    # classes_ isn't guaranteed to be ordered [0, 1], so look up the
+    # positive class's column instead of assuming index 1.
     positive_column = list(model.classes_).index(1)
     probability = model.predict_proba(patient_frame(values, features))[0, positive_column]
     return float(probability)
 
 
 def range_warnings(values: dict[str, Any]) -> list[str]:
-    """Identify valid inputs outside the ranges represented during training."""
+    """Flag any numeric input that falls outside what the model was
+    actually trained on, so a wildly out-of-range prediction doesn't
+    look as confident as one grounded in the data."""
     warnings = []
     descriptions = {
         "Age": "age",
@@ -204,7 +221,9 @@ def range_warnings(values: dict[str, Any]) -> list[str]:
 
 @st.cache_resource(show_spinner="Loading the HeartSaver model…")
 def load_bundle(path: Path) -> tuple[dict[str, Any] | None, str | None]:
-    """Load and validate the notebook artefact without crashing the interface."""
+    """Load and validate the .pkl once per session. Returns (bundle, None)
+    on success or (None, message) on failure — never raises, so the caller
+    can just check model_error and st.stop() cleanly."""
     if not path.exists():
         return None, (
             f"Model file not found at `{path}`. Run the notebook from top to "
@@ -226,17 +245,18 @@ def load_bundle(path: Path) -> tuple[dict[str, Any] | None, str | None]:
 
 
 def queue_preset(name: str) -> None:
-    """Queue widget values so Streamlit applies them before creating the form."""
+    """Stage a preset so it lands in the form widgets on the next rerun,
+    and wipe any result left over from before."""
     st.session_state["pending_patient"] = PRESETS[name]
     st.session_state.pop("assessment", None)
 
-
 def clear_form() -> None:
-    """Queue an empty form and clear any result from a previous submission."""
+    """Same idea as queue_preset, but every field goes back to empty."""
     st.session_state["pending_patient"] = {name: None for name in PRESETS[next(iter(PRESETS))]}
     st.session_state.pop("assessment", None)
 
 
+# If the model can't be loaded there's nothing else worth rendering.
 bundle, model_error = load_bundle(MODEL_PATH)
 if model_error:
     st.title("HeartSaver")
@@ -267,6 +287,8 @@ with heading_right:
 
 st.divider()
 
+# Any preset/clear click from the last rerun gets applied here, before the
+# widgets below are created, so Streamlit picks up the new values.
 for field, value in st.session_state.pop("pending_patient", {}).items():
     st.session_state[f"patient_{field}"] = value
 
@@ -284,7 +306,7 @@ with input_column:
     )
     if load_column.button("Load", use_container_width=True):
         queue_preset(selected_example)
-        st.rerun()
+        st.rerun()  # need a rerun so the staged values reach the widgets
     if clear_column.button("Clear", use_container_width=True):
         clear_form()
         st.rerun()
@@ -298,7 +320,7 @@ with input_column:
                 "Age (years)",
                 min_value=18,
                 max_value=100,
-                value=None,
+                value=None,  # start blank so a submit with nothing entered is caught below
                 step=1,
                 placeholder="Enter age",
                 key="patient_Age",
@@ -396,6 +418,8 @@ with input_column:
         missing = [missing_labels[name] for name, value in values.items() if value is None]
 
         if missing:
+            # Don't score a half-filled form — clear any stale result and
+            # tell the user exactly what's left.
             st.session_state.pop("assessment", None)
             st.error(
                 "Complete every field before assessment:\n\n"
@@ -405,12 +429,17 @@ with input_column:
             try:
                 probability = disease_probability(bundle, values)
             except Exception as exc:
+                # Shouldn't happen if validate_bundle passed, but if the
+                # pipeline chokes for some other reason, say so instead
+                # of showing a traceback.
                 st.session_state.pop("assessment", None)
                 st.error(
                     f"The model could not score these inputs: `{exc}`. Check the deployed "
                     "model file and package versions."
                 )
             else:
+                # Stash the result so it survives the rerun and shows up
+                # in the result column on the right.
                 st.session_state["assessment"] = {
                     "values": values,
                     "probability": probability,
@@ -436,7 +465,7 @@ with result_column:
         st.markdown(f"# {probability:.1%}")
         st.markdown(f"**{decision}**")
         st.progress(
-            max(0.0, min(probability, 1.0)),
+            max(0.0, min(probability, 1.0)),  # clamp, just in case
             text=f"Model score {probability:.1%}; decision threshold {THRESHOLD:.0%}",
         )
         st.markdown(
@@ -456,6 +485,8 @@ with result_column:
             "clinical judgement."
         )
 
+        # Echo the inputs back, including the derived feature, so the user
+        # can check what actually produced this score.
         submitted_values = result["values"]
         st.markdown("#### Submitted values")
         st.markdown(
@@ -474,12 +505,16 @@ with result_column:
             f"{'Yes' if submitted_values['Oldpeak'] > 0 else 'No'} (derived)"
         )
 
+# Bottom panel stays visible whether or not a prediction has been made yet —
+# it's context for the tool, not part of the result.
 st.divider()
 st.header("Evidence, scope and limitations")
 
 evidence_column, scope_column, limitation_column = st.columns(3, gap="large")
 
 with evidence_column:
+    # Pulled straight from the bundle, never recomputed here, so these
+    # numbers can't drift from what the notebook actually measured.
     st.subheader("Held-out test results")
     st.markdown(
         f"| Measure | Result |\n"
@@ -513,6 +548,7 @@ with scope_column:
     )
 
 with limitation_column:
+
     st.subheader("Limitations")
     st.markdown(
         "- The 5:1 cost ratio was assumed rather than obtained from stakeholders.\n"

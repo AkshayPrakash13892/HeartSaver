@@ -117,12 +117,10 @@ PRESETS = {
 # ---------------------------------------------------------------------------
 # Look and feel
 #
-# Palette now follows the background image itself instead of fighting it:
-# near-black navy surfaces, light grey-white text, and a single red accent
-# lifted straight from the ECG trace in the picture. Blue is kept only as
-# the secondary/"calm" colour (it's the glow around the heart in the image)
-# so the two decision states read the way the picture already reads —
-# blue and steady vs. red and flagged.
+# Palette follows the background image: near-black navy surfaces, light
+# grey-white text, a single red accent lifted from the ECG trace, and blue
+# (the heart's glow in the image) as the only other colour, reserved for
+# the "below threshold" state.
 # ---------------------------------------------------------------------------
 
 def _background_css() -> str:
@@ -131,11 +129,9 @@ def _background_css() -> str:
     Streamlit doesn't serve arbitrary files from the app folder over HTTP,
     so a local image can't just be linked with a normal url("./file.png") —
     the browser has no route to it. Inlining it as base64 straight into the
-    stylesheet sidesteps that. The scrim on top is a dark navy wash now
-    (matching the image's own tone) rather than a light paper wash, so it
-    darkens for legibility without turning the picture pale. Falls back to
-    a flat dark colour if the file isn't there yet, rather than breaking
-    the whole page over a missing asset.
+    stylesheet sidesteps that. Falls back to a flat dark colour if the file
+    isn't there yet, rather than breaking the whole page over a missing
+    asset.
     """
     if not BACKGROUND_IMAGE_PATH.exists():
         return "background-color: var(--bg);"
@@ -163,6 +159,7 @@ CSS = """
     --red:      #FF3B3B;   /* ECG-trace red — flagged / primary accent */
     --blue:     #4FA8E8;   /* heart-glow blue — calm / secondary accent */
     --surface:  #101B29;   /* solid fallback card colour */
+    --field:    #101B29;   /* solid fallback for form fields (no transparency) */
 }
 
 [data-testid="stAppViewContainer"] { __BACKGROUND_CSS__ }
@@ -171,10 +168,9 @@ CSS = """
 html, body, [class*="css"] { font-family: 'IBM Plex Sans', sans-serif; color: var(--text); }
 
 /* Streamlit's own containers (st.container(border=True)) become the card
-   surfaces. Translucent dark + blurred rather than solid, so the
-   background image reads through every panel instead of just the gaps
-   between them — the blur is what keeps text legible over the busier
-   parts of the picture (the heart, the trace). */
+   surfaces. Translucent dark + blurred so the background image reads
+   through every panel, blurred enough to keep text legible over the
+   busier parts of the picture. */
 [data-testid="stVerticalBlockBorderWrapper"] {
     background: rgba(10, 18, 30, 0.55);
     backdrop-filter: blur(6px);
@@ -212,8 +208,6 @@ p, li, label, span { color: var(--text); }
     font-size: 0.95rem;
     color: rgba(231, 237, 243, 0.8);
 }
-/* Below threshold reads as the calm blue glow; at/above threshold as the
-   ECG-spike red — the same two colours already doing that job in the image. */
 .readout-clear { border-left-color: var(--blue); }
 .readout-clear .vital-value { color: var(--blue); }
 .readout-refer { border-left-color: var(--red); }
@@ -238,8 +232,6 @@ p, li, label, span { color: var(--text); }
 }
 
 /* --- Buttons ---------------------------------------------------------- */
-/* Secondary buttons (Load / Clear): dark translucent, light text, red on
-   hover — same idea as before, just recoloured for the dark theme. */
 .stButton > button {
     background: rgba(16, 27, 41, 0.6);
     backdrop-filter: blur(4px);
@@ -255,8 +247,6 @@ p, li, label, span { color: var(--text); }
     color: var(--red);
     background: rgba(16, 27, 41, 0.8);
 }
-/* Primary button (Calculate model result): solid red fill, matching the
-   ECG trace — Streamlit renders this with a kind="primary" attribute. */
 .stButton > button[kind="primary"],
 button[kind="primaryFormSubmit"] {
     background: rgba(255, 59, 59, 0.88);
@@ -271,38 +261,70 @@ button[kind="primaryFormSubmit"]:hover {
 }
 
 /* --- Inputs ------------------------------------------------------------ */
-/* Number inputs and the selectbox trigger, restyled for the dark theme —
-   dark translucent fields with light text instead of Streamlit's default
-   white-on-white, which would disappear against this background. */
-[data-testid="stNumberInput"] input {
-    background: rgba(16, 27, 41, 0.65);
-    color: var(--text);
-    border-color: rgba(60, 88, 114, 0.8) !important;
-}
+/* Text/select fields: solid dark fields rather than translucent ones.
+   These sit inside a translucent+blurred card already, so a second layer
+   of transparency on top of that was what produced the washed-out,
+   two-tone boxes (dark on the left where the image showed through less,
+   pale grey on the right over the stepper buttons Streamlit adds to
+   number inputs). A solid field colour reads consistently everywhere. */
+[data-testid="stNumberInput"] > div,
 [data-baseweb="select"] > div {
-    background: rgba(16, 27, 41, 0.65) !important;
-    border-color: rgba(60, 88, 114, 0.8) !important;
-    color: var(--text);
+    background: var(--field) !important;
+    border: 1px solid rgba(60, 88, 114, 0.8) !important;
+    border-radius: 6px;
 }
-[data-baseweb="select"] input { color: var(--text) !important; }
-/* The dropdown menu renders in a floating layer outside the form, so it
-   needs its own rule to pick up the same palette. Kept close to opaque
-   since it floats directly over the image when open. */
+
+/* The <input> itself sits inside that wrapper — make it transparent so
+   it just shows the wrapper's solid colour instead of adding its own. */
+[data-testid="stNumberInput"] input {
+    background: transparent !important;
+    color: var(--text) !important;
+    border: none !important;
+}
+[data-testid="stNumberInput"] input::placeholder,
+[data-baseweb="select"] [class*="placeholder"] {
+    color: rgba(231, 237, 243, 0.5) !important;
+    opacity: 1 !important;
+}
+
+/* The +/- step buttons Streamlit bolts onto number inputs default to a
+   light grey that clashed hard against the dark field — this was the
+   unreadable half of the box in the screenshot. Recolour to match. */
+[data-testid="stNumberInputStepUp"],
+[data-testid="stNumberInputStepDown"] {
+    background: rgba(60, 88, 114, 0.35) !important;
+    border-left: 1px solid rgba(60, 88, 114, 0.8) !important;
+}
+[data-testid="stNumberInputStepUp"]:hover,
+[data-testid="stNumberInputStepDown"]:hover {
+    background: rgba(60, 88, 114, 0.65) !important;
+}
+[data-testid="stNumberInputStepUp"] svg,
+[data-testid="stNumberInputStepDown"] svg {
+    fill: var(--text) !important;
+}
+
+/* Selected value text and the dropdown chevron inside a selectbox. */
+[data-baseweb="select"] > div > div { color: var(--text) !important; }
+[data-baseweb="select"] svg { fill: rgba(231, 237, 243, 0.75) !important; }
+
+/* The dropdown menu itself renders in a floating layer outside the form,
+   so it needs its own rule to pick up the same solid field colour. */
 [data-baseweb="popover"] [data-baseweb="menu"] {
-    background: rgba(10, 18, 30, 0.95);
+    background: var(--field);
 }
 [data-baseweb="menu"] li { color: var(--text); }
 [data-baseweb="menu"] li:hover { background: rgba(60, 88, 114, 0.4); }
 
-/* Focus state uses the red accent, matching the rest of the theme. */
+/* Focus state — the wrapper carries the border now, not the bare input,
+   so the focus ring has to target the wrapper too or it stops showing up. */
 [data-baseweb="select"]:focus-within > div,
-[data-testid="stNumberInput"] input:focus {
+[data-testid="stNumberInput"] > div:focus-within {
     border-color: var(--red) !important;
     box-shadow: 0 0 0 1px var(--red) !important;
 }
 
-/* Progress bar fill (the score bar under the readout) — red, same accent
-   as the ECG trace and the primary button. */
+/* Progress bar fill (the score bar under the readout). */
 [data-testid="stProgress"] > div > div > div {
     background-color: var(--red) !important;
 }
@@ -317,9 +339,6 @@ button[kind="primaryFormSubmit"]:hover {
     border-color: rgba(60, 88, 114, 0.5) !important;
 }
 
-/* Streamlit's default alert boxes (st.error / st.warning) keep their own
-   colouring for clarity, but need a dark-theme background so they don't
-   render as a pale box on this palette. */
 [data-testid="stAlert"] { background: rgba(16, 27, 41, 0.75); }
 </style>
 """.replace("__BACKGROUND_CSS__", _background_css())
@@ -791,6 +810,7 @@ with scope_column:
 
 with limitation_column:
     with st.container(border=True):
+
         st.subheader("Limitations")
         st.markdown(
             "- The 5:1 cost ratio was assumed rather than obtained from stakeholders.\n"
